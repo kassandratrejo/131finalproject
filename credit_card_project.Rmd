@@ -1,0 +1,497 @@
+---
+title: "Credit Card Approval"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+date: "2022-12-05"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,message=FALSE}
+library(janitor)
+library(ggplot2)
+library(tidymodels)
+tidymodels_prefer()
+library(tidyverse)
+library(discrim)
+library(MASS)
+library(corrr)
+library(corrplot)
+library(rpart.plot)
+library(ranger)
+library(vip)
+library(xgboost)
+library(kernlab)
+```
+
+# Introduction
+
+In this project we will be looking at credit card approval data. Our
+main purpose will be to create the best model using our training data to
+determine if a customer has a high or low probability to be accepted a
+credit card based upon many factors in their life. These include their
+`age` , if they are in any `debt` , how many `YearsEmployed` , and their
+`Income` among other factors. This is something that is really useful
+for companies to consider because we can create a model where they
+input a client's information and it will give them the probability that they
+either will or will not be accepted for the credit card.
+
+# Loading In Our Data
+
+This data set had some missing values throughout the data set but with a
+bit of cleaning performed in another script we are able to provide the
+following cleaned data set. We have 690 observations and 16 variables to
+work with and try to find the best model that will predict if our client
+is approved for their credit card!
+
+```{r}
+credit_cards<-read.csv("/Users/kassandratrejo/Desktop/131-Final-Project/clean_dataset.csv")
+```
+
+Great, let's use the head() function to take a look at some of the rows
+of our data frame. We can see that we have some integer and character
+values that are very helpful.
+
+```{r}
+head(credit_cards)
+```
+
+From here we can see that some variables will be important in accurately predicting if our customer was approved or not. 
+- `Age` : The age of the
+customer as a floating point number 
+- `Debt` : The amount of debt the
+customer is in as a floating point number 
+- `BankCustomer` : If the
+customer already has an account with the bank 1- Yes 0- No 
+-`YearsEmployed` : The amount of years the customer has been employed for
+as a floating point number 
+- `Income` : The yearly income for each
+customer (scaled in the 100k) 
+- `Gender`: coded as 0 for female and 1 for male
+
+Let's create our new data set with the function `clean_names()` that we
+will be working with for the rest of the project
+
+```{r}
+data<-clean_names(credit_cards)
+
+data<-data %>% 
+  select(-married)
+```
+Here I deleted the column `married` because it turned out that it was a repeated column of `bank_customer` and was giving errors in later models. 
+
+Quickly we can look at a bar plot of age to have an understanding of the
+customers we have in our data set
+
+```{r}
+data %>% 
+  ggplot(aes(y=age)) +
+  geom_bar()
+```
+
+We can see that there is a higher number of people between the age of 18
+and 40 than there are for people 60+. This can perhaps tell us that we
+will see less customers that are approved because they have not been
+working for a long time and don't have the same history as someone who
+is older and has been working and building up their credit score.
+
+## Splitting Our Data
+
+Before we continue with the data exploration lets perform our initial
+split. Here we will split on our prediction variable which is approved.
+Ultimately we want to know if our client gets approved for the credit
+card. Here lets do an 80% split that way we have sufficient amount of
+data to train our models and still an appropriate amount to test our
+models.
+
+```{r}
+# make approved a factor
+data$approved<-as.factor(data$approved)
+```
+
+```{r}
+set.seed(4390)
+credit_split<-initial_split(data, prop=0.80, strata= approved)
+c_train<-training(credit_split)
+c_test<-testing(credit_split)
+```
+
+Let's take a look at the dimensions of our training and testing datasets.
+
+```{r}
+dim(c_train)
+dim(c_test) 
+```
+
+Great we have 551 observations to train our models and 139 observations
+to test with. This is a good proportion because we will have sufficient
+observations to test our models in the end.
+
+Next lets do v-fold cross validation on our training set
+
+```{r}
+cards_folds<-vfold_cv(c_train, v=5, strata=approved)
+cards_folds
+```
+
+Great we have now split our data and applied our cross validation with 5
+folds!
+
+# Data Exploration
+
+Let's finally take a look at our data and explore the 16 variables we
+have in more depth.
+
+First we can look at a correlation matrix with all of our variables to get an idea of the relationship among them. 
+```{r}
+c_train %>% 
+  select(where(is.numeric)) %>% 
+  cor() %>% 
+  corrplot(method='color', type='full',order='hclust')
+```
+
+We can see from our corrplot that some variables are more correlated
+than others. Prior default and approved seem to have a higher correlation than the rest. Employed and credit_score also have a high correlation.
+
+Let's take a closer look at years_employed
+
+```{r}
+ggplot(c_train, aes(years_employed)) +
+  geom_boxplot(color="red", fill="orange", alpha=0.2)
+```
+
+From our boxplot we can see that there is a median year for years
+employed in our customers. Most seem to be employed for only 1-2 years.
+
+Further we can take a look at the amount of customers that were already
+a member of the bank and if they were approved or not for the credit
+card.
+
+```{r}
+ggplot(data = c_train, mapping = aes(x = bank_customer)) +
+  geom_bar(color="black", fill="green", alpha=0.2) + 
+  facet_wrap( ~ approved)
+
+```
+There seems to be about the same number of customers that were approved and denied a credit card that were already an existing customer at the bank. However there is a higher number of people that were denied a credit card and that was not considered a bank customer already.
+
+Next let's also take a look at the amount of people that had a prior_default and if they were approved or not.
+```{r}
+ggplot(data = c_train, mapping = aes(x = prior_default)) +
+  geom_bar(color="blue", fill="purple", alpha=0.2) + 
+  facet_wrap( ~ approved)
+```
+Wow here we see a big difference, more people that were approved for a credit card had a prior default and more people that did not have a prior default were not approved for a credit card. This is something strange considering a prior default means that the customer failed to make the required payments on the debt. Let's keep exploring.
+
+
+We can take a look at the gender difference between approvals.
+```{r}
+ggplot(data = c_train, mapping = aes(x = gender)) +
+  geom_bar(color="dark blue", fill="red", alpha=0.3) + 
+  facet_wrap( ~ approved)
+
+```
+In both instances of approved and not approved there were more males meaning that more males applied for a credit card
+
+```{r}
+sum(data$gender==0)
+sum(data$gender==1)
+```
+
+This is correct! In total 210 females applied for a credit card and 480 males applied. With this information we can still determine that more males and females were not approved for the credit card. 
+
+Now let's take a look at the approval rate among different industry types.
+```{r}
+c_train %>% group_by(approved, industry) %>% summarise(n=n()) %>% 
+    ggplot(aes(x=approved, y=n,group=approved ,fill=approved)) + geom_bar(stat='identity', position='dodge',color="orange", fill="yellow", alpha=0.75) + labs(x='Industry', y="Number of Approved") + facet_wrap(~industry)
+```
+
+There is a lot more not approved across different types of industries
+that these customers work in. There are more approved only in Materials,
+Utilities, and Information Technology industries.
+
+We can use a similar graph to explore the approval rates among different ethnic groups.
+```{r}
+c_train %>% group_by(approved,ethnicity) %>% summarise(n=n()) %>% 
+    ggplot(aes(x=approved, y=n,group=approved ,fill=approved)) + geom_bar(stat='identity', position='dodge',color="purple", fill="pink", alpha=0.75) + labs(x='Ethnicity', y="Number of Approved") + facet_wrap(~ethnicity)
+```
+We can see from the graphs that there are not a lot of ethnic groups in general that applied and those that did were in small numbers. There are more 'White' that applied for the credit card. 
+
+# Building Our Model
+
+Now that we have gone through our data cleaning and manipulation we were
+able to conduct some EDA to show correlations among our variables and
+explore our outcome variable distribution. We are ready to build our
+models! Here I will be first creating my recipe which we will be using
+in the creation of our models.
+
+In our recipe we will include all of our predictors and use `step_dummy` and `step_normalize` to ensure that our variables are centered and scaled as well as making sure that our factor variables are accounted for.
+```{r}
+c_recipe<-recipe(approved~gender+age+debt+bank_customer+industry+ethnicity+years_employed+prior_default+employed+credit_score+drivers_license+citizen+zip_code+income,data=c_train) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_predictors())
+```
+
+Great we have set up our recipe now let's try some models
+
+First we'll try out the Logistic Regression model onto our folds and collect the metrics for it.
+```{r}
+# logistic regression model using the glm engine 
+lr_model <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+# workflow with model and recipe
+lr_wflow <- workflow() %>% 
+  add_model(lr_model) %>% 
+  add_recipe(c_recipe)
+
+# fit_resamples() to apply our folds onto the fit
+fit1<-fit_resamples(lr_wflow,resamples= cards_folds)
+fit1
+
+collect_metrics(fit1)
+
+```
+
+Not bad,from our logistic regression model fitting onto our credit card folds we
+obtained a high accuracy of 85% and a high roc_auc of 90%.
+
+Next we will try the Linear discriminant model
+
+```{r}
+# logistic regression using the MASS engine
+ld_mod<-discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+# workflow with our model and recipt
+ld_work<-workflow() %>% 
+  add_model(ld_mod) %>% 
+  add_recipe(c_recipe)
+
+# fitting onto our folds
+fit2<-fit_resamples(ld_work, resamples=cards_folds)
+fit2
+
+collect_metrics(fit2)
+```
+
+We fit the linear discriminant model to our credit card folds and also
+obtained a high accuracy of 85% and an roc_auc of 91%
+
+Lastly let us try the Quadratic Discriminant Analysis model
+
+```{r}
+# quadratic discriminant model with MASS engine
+qd_mod<-discrim_quad() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+# workflow with model and recipe
+qd_work<-workflow() %>% 
+  add_model(qd_mod) %>% 
+  add_recipe(c_recipe)
+```
+
+```{r, error=TRUE}
+# fit onto our folds
+fit3<-fit_resamples(qd_work,resamples=cards_folds)
+fit3
+
+# collect our roc_auc value
+collect_metrics(fit3)
+```
+
+From fitting the quadratic discriminant analysis model we obtain a lower
+accuracy of 81% and still the same value of roc_auc of 91%
+
+Let us move onto our decision tree and random forest models
+
+## Random Forest 
+
+We are going to tune the min_n, mtry, and trees in our random forest
+model. We want to be able to tune these parameters because the mtry
+parameter represents the number of predictors that are going to be
+randomly sampled at each split when the trees are created.The trees
+parameter represents thee number of trees in the model.The min_n
+parameter represents the minimum number of data points in a node that
+the node needs in order to continue to be split.
+
+```{r}
+for_model<-rand_forest(mtry=tune(),trees=tune() ,min_n=tune() ) %>%
+  set_engine("ranger", importance= "impurity") %>% 
+  set_mode("classification") 
+
+for_model_wf<-workflow() %>%
+  add_model(for_model) %>% 
+  add_recipe(c_recipe)
+```
+
+Let's try these values for our parameters and see what kind of results
+we get!
+
+```{r}
+param_grid<-grid_regular(mtry(range=c(1,8)),trees(range=c(200,800)),min_n(range=c(4,15)),levels=8)
+```
+
+```{r,eval=FALSE}
+tune_forest<-tune_grid(
+  for_model_wf,
+  resamples=cards_folds,
+  grid=param_grid,
+  metrics=metric_set(roc_auc)
+)
+
+write_rds(tune_forest,file="rand-forest-res.rds")
+```
+
+Since tune_grid takes a while to run we want to save it into a file and
+be able to open and use it later in our project without having to rerun
+our code and have it take a long time to run again.
+
+Here we can reopen our results to determine which values produced the
+best results and we can visualize our random forest results through our plot
+
+```{r}
+random_forest<-read_rds("rand-forest-res.rds")
+autoplot(random_forest)
+```
+
+Lets select the value that produced the best results since it is a bit hard to select just from the plots.
+```{r}
+forest_val<- random_forest %>% 
+  collect_metrics() %>% 
+  arrange(desc(mean)) %>% 
+  slice(1)
+forest_val
+```
+
+Great we ran our tree with parameter nodes ranging from 4 to 15, trees
+ranging from 200 to 800 and with 8 levels Using `collect_metrics()` on
+our random forest we see that the best performing result had mtry=5,
+trees=285, min_n=15 with an roc_auc of 0.9314.
+
+Let's find our best performing random forest model and apply it to our
+entire training set now
+
+```{r,eval=FALSE}
+best_complexity2<-select_best(tune_forest)
+
+rand_for_final<-finalize_workflow(for_model_wf,best_complexity2)
+
+rand_forest_final_fit<-fit(rand_for_final,data=c_train) 
+```
+
+Let's take a look at which variables were the most useful in our
+predictions
+
+```{r,eval=FALSE}
+vip(pull_workflow_fit(rand_forest_final_fit))
+```
+
+Wow prior default has the most importance in our random forest!Bank ustomer and industry_utilities had the least importance out of all of the variables.
+
+## Boosted Tree Model
+Now we are going to set up our boosted tree model and see if we can get
+even better results!
+
+Here we can set up our model and workflow. We will be tuning trees and learning rate. We want to tune trees because we want to provide a range of values that will give us the optimal number of trees to minimize our loss function. We also want to tune the learning rate because it controls how quickly the algorithm is running and can help decrease the chances that we overfit our model.The only thing to be aware of us that a smaller learning rate will also increase the time that our model will run for.
+```{r}
+boost_spec<-boost_tree(trees=tune(),learn_rate=tune()) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+boost_model_wf<-workflow() %>% 
+  add_model(boost_spec) %>% 
+  add_recipe(c_recipe)
+
+param_grid2<-grid_regular(trees(range=c(10,2000)),learn_rate(range=c(.0001,.01)),levels=10)
+```
+After trying with different hyperparameters I found that the trees range from 10 to 2000 and the learning rate range from .0001 to .01 with levels=10 will generate the best results. 
+
+Let's now apply it to our folds and set the metric to roc_auc.
+```{r}
+tune_boost<-tune_grid( 
+  boost_model_wf,
+  resamples=cards_folds,
+  grid=param_grid2,
+  metrics=metric_set(roc_auc)
+)
+
+write_rds(tune_boost,file="boosted-tree-res.rds")
+```
+
+To visualize our boosted tree and which parameters gave the best results lets us autoplot().
+```{r}
+boosted_tree<-read_rds("boosted-tree-res.rds")
+autoplot(boosted_tree)
+```
+
+The autoplot shows that adding more trees does not necessarily mean that
+the roc_auc value will increase. We can see that the different values of learning rate does affect the roc_auc value heavily. 
+
+Let's collect our metrics from all our boosted trees and see which provided the best mean roc_auc value.
+```{r}
+boosted_val<-boosted_tree%>% 
+  collect_metrics() %>% 
+  arrange(desc(mean)) 
+boosted_val
+```
+
+The best performing model was the one with 231 trees and a learning rate of 1.023293 with an roc_auc
+value of 0.91674 and a low standard error or .0081021
+
+Now that we have done 5 different models we will choose the best performing one to apply our testing data to.
+
+Since Random Forest performed the best we will use that model onto our
+testing set to see what results we get.
+
+```{r,eval=FALSE}
+best_complexity_final<-select_best(tune_forest)
+
+rand_for_final2<-finalize_workflow(for_model_wf,best_complexity_final)
+
+rand_forest_final_fit2<-fit(rand_for_final2,data=c_test) 
+```
+
+Let's see what the AUC value of our best performing model is
+
+```{r,eval=FALSE}
+augment(rand_forest_final_fit2, new_data=c_test) %>% 
+  roc_curve(approved, .pred_0) %>% 
+  autoplot() 
+```
+From the roc curve we can see that our model predicted very accurately. 
+
+```{r,eval=FALSE}
+augment(rand_forest_final_fit2,new_data=c_test) %>% 
+  roc_auc(approved, .pred_0)
+```
+Wow we have an roc_auc value of 0.99266! Our random forest did very well on the testing data set!
+
+
+# Prediction
+Since this is a binary classification problem we can predict if I will be approved for the credit card based upon my information:
+```{r,eval=FALSE}
+predict(rand_forest_final_fit2,new_data=data.frame(gender=0,age=21.3, debt=0,bank_customer=1,industry='InformationTechnology',
+                                                   ethnicity='Latino', years_employed=1.25,prior_default=1,employed=0,
+                                                   credit_score=6,drivers_license=1,citizen='ByBirth',zip_code=120,
+                                                   income=3))
+```
+Look at that! I would be approved for this credit card based upon my inputs.
+
+# Conclusion
+Great we have now run 5 models and have gotten pretty good results throughout them. Ultimately our two best performing models were random forest and boosted trees. After playing around with the parameters we managed to find the most optimal hyperparameters that gave us high accuracies of .93 and .91! Since our random forest model provided the highest accuracy we used that onto our entire training set now to see how it performs with new data and we got an accuracy of 0.992! These are great results and are pretty consistent with what we had been getting with our training set. 
+
+In the future I would like to try perhaps a neural network model or a support vector machine model to see how well our data performs. I think what I have done so far has set me up to successfully implement these other models that require some more tuning and debugging. I would also like to further explore the data analysis portion to try to develop even better graphs that could be helpful to businesses. 
+
+Overall, this credit card approval data set provided great opportunity to conduct exploratory analysis and explore the different relationships among our variables. Although this topic may not seem as interesting I found that after working through the models and analysis it is something that is very useful and in so makes it interesting and exciting to work with. I see how this can be applicable to companies in other areas and that excites me for the future and especially when applying for jobs soon. 
