@@ -44,7 +44,7 @@ for companies to consider because we can create a model where they
 input a client's information and it will give them the probability that they
 either will or will not be accepted for the credit card.
 
-# Loading In Our Data
+# Loading In Our Data 
 
 This data set had some missing values throughout the data set but with a
 bit of cleaning performed in another script we are able to provide the
