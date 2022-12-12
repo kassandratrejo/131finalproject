@@ -1,0 +1,15 @@
+gender,"0=female, 1=male"
+age,in years
+debt,"oustanding debt, scaled"
+bank_customer,"0= does not have a bank account, 1= has a bank account"
+industry,the job sector of the most recent or current job
+ethnicity,what ethnicity each person is
+years_employed,floating point number of how long person has been working
+prior_default,"0= no prior default, 1=prior default. "
+employed,"0= not employed, 1=employed"
+credit_score,"the credit score, integer value, scaled"
+drivers_license,"0= no license, 1= has license"
+citizen,"citizenship; By birth, By other means, or Temporary"
+zip_code,a 5 digit number of zip code
+income,income scaled in 100k
+approved,"0= not approved, 1=approved for the credit card"
